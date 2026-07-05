@@ -83,6 +83,17 @@ fn main() {
     #[cfg(not(unix))]
     let batch_size: usize = AVERAGE_BATCH_SIZE;
 
+    let output_file = match &opts.output {
+        Some(path) => {
+            let f = std::fs::File::create(path).unwrap_or_else(|e| {
+                eprintln!("Failed to open output file {path:?}: {e}");
+                std::process::exit(1);
+            });
+            Some(std::sync::Arc::new(std::sync::Mutex::new(f)))
+        }
+        None => None,
+    };
+
     let scanner = Scanner::new(
         &ips,
         batch_size,
@@ -93,6 +104,7 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
+        output_file,
     );
     debug!("Scanner finished building: {scanner:?}");
 

@@ -161,6 +161,11 @@ pub struct Opts {
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
     pub udp: bool,
+
+    /// Output file to write IP:PORT per line. Suppresses per-port console output
+    /// and instead prints the total count of IPs with open ports.
+    #[arg(short, long, value_parser)]
+    pub output: Option<PathBuf>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -247,6 +252,7 @@ impl Default for Opts {
             exclude_ports: None,
             exclude_addresses: None,
             udp: false,
+            output: None,
         }
     }
 }

@@ -14,10 +14,14 @@ use futures::stream::FuturesUnordered;
 use std::collections::BTreeMap;
 use std::{
     collections::HashSet,
+    io::Write,
     net::{IpAddr, Shutdown, SocketAddr},
     num::NonZeroU8,
+    sync::{Arc, Mutex},
     time::Duration,
 };
+
+type OutputSink = Option<Arc<Mutex<std::fs::File>>>;
 
 /// The class for the scanner
 /// IP is data type IpAddr and is the IP address
@@ -37,6 +41,8 @@ pub struct Scanner {
     accessible: bool,
     exclude_ports: Vec<u16>,
     udp: bool,
+    output: OutputSink,
+    seen_ips: Arc<Mutex<HashSet<IpAddr>>>,
 }
 
 // Allowing too many arguments for clippy.
@@ -52,6 +58,7 @@ impl Scanner {
         accessible: bool,
         exclude_ports: Vec<u16>,
         udp: bool,
+        output: OutputSink,
     ) -> Self {
         Self {
             batch_size,
@@ -63,6 +70,8 @@ impl Scanner {
             accessible,
             exclude_ports,
             udp,
+            output,
+            seen_ips: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -296,7 +305,22 @@ impl Scanner {
 
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
-        if !self.greppable {
+        if self.output.is_some() {
+            if let Some(file) = &self.output {
+                if let Ok(mut f) = file.lock() {
+                    let _ = writeln!(f, "{socket}");
+                }
+            }
+            let is_new = self
+                .seen_ips
+                .lock()
+                .map(|mut s| s.insert(socket.ip()))
+                .unwrap_or(false);
+            if is_new {
+                let count = self.seen_ips.lock().map(|s| s.len()).unwrap_or(0);
+                println!("Open IPs found: {count}");
+            }
+        } else if !self.greppable {
             if self.accessible {
                 println!("Open {socket}");
             } else {
@@ -332,6 +356,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            None,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -356,6 +381,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            None,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -379,6 +405,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            None,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -401,6 +428,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            None,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -426,6 +454,7 @@ mod tests {
             true,
             vec![9000],
             false,
+            None,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -450,6 +479,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            None,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -474,6 +504,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            None,
         );
         block_on(scanner.run());
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
@@ -497,6 +528,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            None,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
@@ -519,6 +551,7 @@ mod tests {
             true,
             vec![9000],
             true,
+            None,
         );
         block_on(scanner.run());
         assert_eq!(1, 1);
