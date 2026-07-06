@@ -58,9 +58,8 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
             continue;
         }
 
-        if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
-            ips.extend(x);
-        } else {
+        if let Err(e) = read_ips_from_file(file_path, &backup_resolver, &mut ips) {
+            debug!("Failed to read IPs from {file_path:?}: {e}");
             warning!(
                 format!("Host {file_path:?} could not be resolved."),
                 input.greppable,
@@ -215,13 +214,12 @@ fn read_resolver_from_file(path: &str) -> Result<Vec<IpAddr>, std::io::Error> {
 #[cfg(not(tarpaulin_include))]
 /// Parses an input file of IPs and uses those
 fn read_ips_from_file(
-    ips: &std::path::Path,
+    path: &std::path::Path,
     backup_resolver: &Resolver,
-) -> Result<Vec<IpAddr>, std::io::Error> {
-    let file = File::open(ips)?;
+    ips: &mut Vec<IpAddr>,
+) -> Result<(), std::io::Error> {
+    let file = File::open(path)?;
     let reader = BufReader::new(file);
-
-    let mut ips: Vec<IpAddr> = Vec::new();
 
     for address_line in reader.lines() {
         if let Ok(address) = address_line {
@@ -231,7 +229,7 @@ fn read_ips_from_file(
         }
     }
 
-    Ok(ips)
+    Ok(())
 }
 
 #[cfg(test)]
