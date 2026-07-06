@@ -32,7 +32,6 @@ type OutputSink = Option<Arc<Mutex<std::fs::File>>>;
 #[cfg(not(tarpaulin_include))]
 #[derive(Debug)]
 pub struct Scanner {
-    ips: Vec<IpAddr>,
     batch_size: usize,
     timeout: Duration,
     tries: NonZeroU8,
@@ -49,7 +48,6 @@ pub struct Scanner {
 #[allow(clippy::too_many_arguments)]
 impl Scanner {
     pub fn new(
-        ips: &[IpAddr],
         batch_size: usize,
         timeout: Duration,
         tries: u8,
@@ -66,7 +64,6 @@ impl Scanner {
             tries: NonZeroU8::new(std::cmp::max(tries, 1)).unwrap(),
             greppable,
             port_strategy,
-            ips: ips.iter().map(ToOwned::to_owned).collect(),
             accessible,
             exclude_ports,
             udp,
@@ -78,7 +75,7 @@ impl Scanner {
     /// Runs scan_range with chunk sizes
     /// If you want to run RustScan normally, this is the entry point used
     /// Returns all open ports as `Vec<u16>`
-    pub async fn run(&self) -> Vec<SocketAddr> {
+    pub async fn run(&self, ips: &[IpAddr]) -> Vec<SocketAddr> {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -86,7 +83,7 @@ impl Scanner {
             .filter(|&port| !self.exclude_ports.contains(port))
             .copied()
             .collect();
-        let mut socket_iterator: SocketIterator = SocketIterator::new(&self.ips, &ports);
+        let mut socket_iterator: SocketIterator = SocketIterator::new(ips, &ports);
         let mut open_sockets: Vec<SocketAddr> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
@@ -102,9 +99,9 @@ impl Scanner {
 
         debug!("Start scanning sockets. \nBatch size {}\nNumber of ip-s {}\nNumber of ports {}\nTargets all together {} ",
             self.batch_size,
-            self.ips.len(),
+            ips.len(),
             &ports.len(),
-            (self.ips.len() * ports.len()));
+            (ips.len() * ports.len()));
 
         while let Some(result) = ftrs.next().await {
             if let Some(socket) = socket_iterator.next() {
@@ -115,7 +112,7 @@ impl Scanner {
                 Ok(socket) => open_sockets.push(socket),
                 Err(e) => {
                     let error_string = e.to_string();
-                    if errors.len() < self.ips.len() * 1000 {
+                    if errors.len() < ips.len() * 1000 {
                         errors.insert(error_string);
                     }
                 }
@@ -347,7 +344,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -358,7 +354,7 @@ mod tests {
             false,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
         assert_eq!(1, 1);
     }
@@ -372,7 +368,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -383,7 +378,7 @@ mod tests {
             false,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
         assert_eq!(1, 1);
     }
@@ -396,7 +391,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -407,7 +401,7 @@ mod tests {
             false,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         assert_eq!(1, 1);
     }
     #[test]
@@ -419,7 +413,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -430,7 +423,7 @@ mod tests {
             false,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         assert_eq!(1, 1);
     }
     #[test]
@@ -445,7 +438,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -456,7 +448,7 @@ mod tests {
             false,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         assert_eq!(1, 1);
     }
 
@@ -470,7 +462,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -481,7 +472,7 @@ mod tests {
             true,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
         assert_eq!(1, 1);
     }
@@ -495,7 +486,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -506,7 +496,7 @@ mod tests {
             true,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         // if the scan fails, it wouldn't be able to assert_eq! as it panicked!
         assert_eq!(1, 1);
     }
@@ -519,7 +509,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -530,7 +519,7 @@ mod tests {
             true,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         assert_eq!(1, 1);
     }
     #[test]
@@ -542,7 +531,6 @@ mod tests {
         };
         let strategy = PortStrategy::pick(&Some(range), None, ScanOrder::Random);
         let scanner = Scanner::new(
-            &addrs,
             10,
             Duration::from_millis(100),
             1,
@@ -553,7 +541,7 @@ mod tests {
             true,
             None,
         );
-        block_on(scanner.run());
+        block_on(scanner.run(&addrs));
         assert_eq!(1, 1);
     }
 }

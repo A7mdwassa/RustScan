@@ -12,11 +12,10 @@ use rustscan::{detail, funny_opening, output, warning};
 use colorful::{Color, Colorful};
 use futures::executor::block_on;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::string::ToString;
 use std::time::Duration;
 
-use rustscan::address::parse_addresses;
+use rustscan::address::parse_addresses_chunked;
 
 extern crate colorful;
 extern crate dirs;
@@ -66,17 +65,6 @@ fn main() {
         print_opening(&opts);
     }
 
-    let ips: Vec<IpAddr> = parse_addresses(&opts);
-
-    if ips.is_empty() {
-        warning!(
-            "No IPs could be resolved, aborting scan.",
-            opts.greppable,
-            opts.accessible
-        );
-        std::process::exit(1);
-    }
-
     #[cfg(unix)]
     let batch_size: usize = infer_batch_size(&opts, adjust_ulimit_size(&opts));
 
@@ -94,49 +82,44 @@ fn main() {
         None => None,
     };
 
+    let port_strategy = PortStrategy::pick(&opts.range, opts.ports.clone(), opts.scan_order);
     let scanner = Scanner::new(
-        &ips,
         batch_size,
         Duration::from_millis(opts.timeout.into()),
         opts.tries,
         opts.greppable,
-        PortStrategy::pick(&opts.range, opts.ports, opts.scan_order),
+        port_strategy,
         opts.accessible,
-        opts.exclude_ports.unwrap_or_default(),
+        opts.exclude_ports.clone().unwrap_or_default(),
         opts.udp,
         output_file,
     );
     debug!("Scanner finished building: {scanner:?}");
 
+    let mut ports_per_ip = HashMap::new();
+    let mut total_ips_scanned = 0usize;
+
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run());
+    parse_addresses_chunked(&opts, 100_000, |chunk| {
+        total_ips_scanned += chunk.len();
+        let open = block_on(scanner.run(chunk));
+        for socket in open {
+            ports_per_ip
+                .entry(socket.ip())
+                .or_insert_with(Vec::new)
+                .push(socket.port());
+        }
+    });
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
-    let mut ports_per_ip = HashMap::new();
-
-    for socket in scan_result {
-        ports_per_ip
-            .entry(socket.ip())
-            .or_insert_with(Vec::new)
-            .push(socket.port());
-    }
-
-    for ip in ips {
-        if ports_per_ip.contains_key(&ip) {
-            continue;
-        }
-
-        // If we got here it means the IP was not found within the HashMap, this
-        // means the scan couldn't find any open ports for it.
-
-        let x = format!("Looks like I didn't find any open ports for {:?}. This is usually caused by a high batch size.
-        \n*I used {} batch size, consider lowering it with {} or a comfortable number for your system.
-        \n Alternatively, increase the timeout if your ping is high. Rustscan -t 2000 for 2000 milliseconds (2s) timeout.\n",
-        ip,
-        opts.batch_size,
-        "'rustscan -b <batch_size> -a <ip address>'");
-        warning!(x, opts.greppable, opts.accessible);
+    if total_ips_scanned == 0 {
+        warning!(
+            "No IPs could be resolved, aborting scan.",
+            opts.greppable,
+            opts.accessible
+        );
+        std::process::exit(1);
     }
 
     let mut script_bench = NamedTimer::start("Scripts");

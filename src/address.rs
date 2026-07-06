@@ -16,6 +16,9 @@ use log::debug;
 use crate::input::Opts;
 use crate::warning;
 
+/// Default chunk size used when streaming IPs to keep peak memory bounded.
+pub const STREAM_CHUNK_SIZE: usize = 65_536;
+
 /// Parses the string(s) into IP addresses.
 ///
 /// Goes through all possible IP inputs (files or via argparsing).
@@ -77,13 +80,116 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
     ips
 }
 
+/// Streaming variant of [`parse_addresses`] that never holds all IPs in memory.
+///
+/// IPs (from CLI args and/or newline-delimited files) are produced in fixed-size
+/// chunks. CIDR ranges are expanded lazily, one address at a time, so even a /8
+/// never materialises fully — peak memory is bounded by `chunk_size`.
+///
+/// The callback `f` is invoked once per full chunk and once more with any
+/// remainder. Dedup/exclusion runs per-chunk only; cross-chunk dups are not
+/// removed (holding every IP to dedup globally is itself the OOM we're avoiding
+/// on inputs like cn.txt — a few extra connection attempts beat gigabytes of RAM).
+///
+/// Returns the total number of IPs yielded across all chunks.
+pub fn parse_addresses_chunked<F>(input: &Opts, chunk_size: usize, mut f: F) -> usize
+where
+    F: FnMut(&[IpAddr]),
+{
+    let backup_resolver = get_resolver(&input.resolver);
+    let excluded_cidrs = parse_excluded_networks(&input.exclude_addresses, &backup_resolver);
+
+    let mut chunk: Vec<IpAddr> = Vec::with_capacity(chunk_size);
+    // ponytail: per-chunk seen set. A global seen set on 300M+ IPs is itself
+    // the OOM source; clearing per chunk bounds memory to chunk_size.
+    let mut seen: BTreeSet<IpAddr> = BTreeSet::new();
+    let mut total = 0usize;
+
+    macro_rules! flush {
+        () => {{
+            if !chunk.is_empty() {
+                total += chunk.len();
+                f(&chunk);
+                chunk.clear();
+                seen.clear();
+            }
+        }};
+    }
+
+    // Push one IP through dedup/exclusion, flushing when the chunk is full.
+    macro_rules! push {
+        ($ip:expr) => {{
+            let ip = $ip;
+            if seen.insert(ip) && !excluded_cidrs.iter().any(|cidr| cidr.contains(&ip)) {
+                chunk.push(ip);
+                if chunk.len() >= chunk_size {
+                    flush!();
+                }
+            }
+        }};
+    }
+
+    // Expand one address spec (IP / CIDR / hostname) lazily into the chunk.
+    macro_rules! expand {
+        ($addr:expr) => {{
+            let address = $addr;
+            if let Ok(addr) = IpAddr::from_str(address) {
+                push!(addr);
+            } else if let Ok(net_addr) = IpInet::from_str(address) {
+                // Lazy CIDR iteration — never collects the whole range.
+                for ip in net_addr.network().into_iter().addresses() {
+                    push!(ip);
+                }
+            } else {
+                // Hostname: resolve (small result set), then push.
+                match format!("{address}:80").to_socket_addrs() {
+                    Ok(mut iter) => {
+                        if let Some(sock) = iter.next() {
+                            push!(sock.ip());
+                        }
+                    }
+                    Err(_) => {
+                        for ip in resolve_ips_from_host(address, &backup_resolver) {
+                            push!(ip);
+                        }
+                    }
+                }
+            }
+        }};
+    }
+
+    // 1) Direct CLI args.
+    for address in &input.addresses {
+        expand!(address.as_str());
+    }
+
+    // 2) File paths (args that didn't resolve directly as IP/CIDR/hostname).
+    for address in &input.addresses {
+        if IpAddr::from_str(address).is_ok() || IpInet::from_str(address).is_ok() {
+            continue;
+        }
+        let path = Path::new(address.as_str());
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(file) = File::open(path) else { continue };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            expand!(line.trim());
+        }
+    }
+
+    // Final partial chunk.
+    flush!();
+    total
+}
+
 /// Given a string, parse it as a host, IP address, or CIDR.
 ///
 /// This allows us to pass files as hosts or cidr or IPs easily
 /// Call this every time you have a possible IP-or-host.
 ///
 /// If the address is a domain, we can self-resolve the domain locally
-/// or resolve it by dns resolver list.
+/// or resolve it by the dns resolver list.
 ///
 /// ```rust
 /// # use rustscan::address::parse_address;
